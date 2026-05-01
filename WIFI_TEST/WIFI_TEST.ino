@@ -9,10 +9,6 @@
 #define W5100_CS_PIN 10
 
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
-IPAddress arduinoIp(192, 168, 1, 50);
-IPAddress dnsServer(192, 168, 1, 1);
-IPAddress gateway(192, 168, 1, 1);
-IPAddress subnet(255, 255, 255, 0);
 IPAddress broker(192, 168, 1, 152);
 const uint16_t BROKER_PORT = 1883;
 const char* CLIENT_ID = "deck-lights";
@@ -101,20 +97,32 @@ void setup() {
     default:                 Serial.println(F("unknown")); break;
   }
 
-  Serial.println(F("Configuring static IP..."));
-  Ethernet.begin(mac, arduinoIp, dnsServer, gateway, subnet);
+  Serial.println(F("Requesting DHCP lease (up to 60s)..."));
+  if (Ethernet.begin(mac) == 0) {
+    Serial.println(F("DHCP FAILED. Arduino did not get a lease."));
+    Serial.println(F("Check link, cable, router DHCP, MAC conflict."));
+  } else {
+    Serial.print(F("DHCP OK. IP: "));
+    Serial.println(Ethernet.localIP());
+    Serial.print(F("Gateway: "));
+    Serial.println(Ethernet.gatewayIP());
+    Serial.print(F("Subnet:  "));
+    Serial.println(Ethernet.subnetMask());
+    Serial.print(F("DNS:     "));
+    Serial.println(Ethernet.dnsServerIP());
+  }
 
   Serial.print(F("Link: "));
   EthernetLinkStatus link = Ethernet.linkStatus();
   Serial.println(link == LinkON ? F("ON") : (link == LinkOFF ? F("OFF") : F("UNKNOWN")));
 
-  Serial.print(F("IP: "));
-  Serial.println(Ethernet.localIP());
-
-  if (Ethernet.localIP() == IPAddress(0, 0, 0, 0)) {
-    Serial.println(F("WARN: IP is 0.0.0.0; SPI to W5100 likely not working."));
-    Serial.println(F("      Re-seat shield, check pins 10-13. Will keep trying MQTT anyway."));
+  Serial.print(F("MAC: "));
+  for (byte i = 0; i < 6; i++) {
+    if (mac[i] < 0x10) Serial.print('0');
+    Serial.print(mac[i], HEX);
+    if (i < 5) Serial.print(':');
   }
+  Serial.println();
 
   mqtt.setServer(broker, BROKER_PORT);
   mqtt.setCallback(mqttCallback);
@@ -123,4 +131,5 @@ void setup() {
 void loop() {
   if (!mqtt.connected()) reconnect();
   mqtt.loop();
+  Ethernet.maintain();
 }
