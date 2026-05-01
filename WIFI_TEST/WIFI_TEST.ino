@@ -6,6 +6,7 @@
 #define NUM_LEDS 9
 #define DATA_PIN 7
 #define SD_CS_PIN 4
+#define W5100_CS_PIN 10
 
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
 const char* BROKER_HOST = "PLANTWATCHVM";
@@ -17,6 +18,12 @@ const char* TOPIC_NOTIFY = "home/lights/notifications";
 CRGB leds[NUM_LEDS];
 EthernetClient ethClient;
 PubSubClient mqtt(ethClient);
+
+void halt(const __FlashStringHelper* reason) {
+  Serial.print(F("HALT: "));
+  Serial.println(reason);
+  while (true) delay(1000);
+}
 
 void publishStatus(const char* msg) {
   mqtt.publish(TOPIC_NOTIFY, msg);
@@ -72,18 +79,43 @@ void reconnect() {
 
 void setup() {
   Serial.begin(9600);
+  while (!Serial) {}
+  delay(1000);
 
   pinMode(SD_CS_PIN, OUTPUT);
   digitalWrite(SD_CS_PIN, HIGH);
+  pinMode(W5100_CS_PIN, OUTPUT);
 
   FastLED.addLeds<NEOPIXEL, DATA_PIN>(leds, NUM_LEDS);
   FastLED.clear();
   FastLED.show();
 
+  Serial.println(F("=== Ethernet hardware check ==="));
+  Ethernet.init(W5100_CS_PIN);
+
+  EthernetHardwareStatus hw = Ethernet.hardwareStatus();
+  Serial.print(F("Hardware: "));
+  switch (hw) {
+    case EthernetNoHardware: Serial.println(F("NONE (SPI not talking to shield)")); break;
+    case EthernetW5100:      Serial.println(F("W5100")); break;
+    case EthernetW5200:      Serial.println(F("W5200")); break;
+    case EthernetW5500:      Serial.println(F("W5500")); break;
+    default:                 Serial.println(F("unknown")); break;
+  }
+  if (hw == EthernetNoHardware) {
+    halt(F("No Ethernet shield detected. Check seating, power, pin 10."));
+  }
+
+  Serial.print(F("Link: "));
+  EthernetLinkStatus link = Ethernet.linkStatus();
+  Serial.println(link == LinkON ? F("ON") : (link == LinkOFF ? F("OFF") : F("UNKNOWN")));
+  if (link == LinkOFF) {
+    Serial.println(F("WARN: cable unplugged or switch port dead; trying DHCP anyway..."));
+  }
+
   Serial.println(F("Starting DHCP..."));
   if (Ethernet.begin(mac) == 0) {
-    Serial.println(F("DHCP failed; halting"));
-    while (true) delay(1000);
+    halt(F("DHCP failed. Check cable, router DHCP, MAC conflict."));
   }
   Serial.print(F("IP: "));
   Serial.println(Ethernet.localIP());
