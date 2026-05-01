@@ -9,6 +9,10 @@
 #define W5100_CS_PIN 10
 
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
+IPAddress arduinoIp(192, 168, 1, 50);
+IPAddress dnsServer(192, 168, 1, 1);
+IPAddress gateway(192, 168, 1, 1);
+IPAddress subnet(255, 255, 255, 0);
 const char* BROKER_HOST = "PLANTWATCHVM";
 const uint16_t BROKER_PORT = 1883;
 const char* CLIENT_ID = "deck-lights";
@@ -110,13 +114,11 @@ void setup() {
   EthernetLinkStatus link = Ethernet.linkStatus();
   Serial.println(link == LinkON ? F("ON") : (link == LinkOFF ? F("OFF") : F("UNKNOWN")));
   if (link == LinkOFF) {
-    Serial.println(F("WARN: cable unplugged or switch port dead; trying DHCP anyway..."));
+    Serial.println(F("WARN: cable unplugged or switch port dead; continuing..."));
   }
 
-  Serial.println(F("Starting DHCP..."));
-  if (Ethernet.begin(mac) == 0) {
-    halt(F("DHCP failed. Check cable, router DHCP, MAC conflict."));
-  }
+  Serial.println(F("Configuring static IP..."));
+  Ethernet.begin(mac, arduinoIp, dnsServer, gateway, subnet);
   Serial.print(F("IP: "));
   Serial.println(Ethernet.localIP());
 
@@ -127,5 +129,4 @@ void setup() {
 void loop() {
   if (!mqtt.connected()) reconnect();
   mqtt.loop();
-  Ethernet.maintain();
 }
