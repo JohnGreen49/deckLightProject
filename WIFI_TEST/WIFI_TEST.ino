@@ -23,12 +23,6 @@ CRGB leds[NUM_LEDS];
 EthernetClient ethClient;
 PubSubClient mqtt(ethClient);
 
-void halt(const __FlashStringHelper* reason) {
-  Serial.print(F("HALT: "));
-  Serial.println(reason);
-  while (true) delay(1000);
-}
-
 void publishStatus(const char* msg) {
   mqtt.publish(TOPIC_NOTIFY, msg);
   Serial.println(msg);
@@ -100,27 +94,27 @@ void setup() {
   EthernetHardwareStatus hw = Ethernet.hardwareStatus();
   Serial.print(F("Hardware: "));
   switch (hw) {
-    case EthernetNoHardware: Serial.println(F("NONE (SPI not talking to shield)")); break;
+    case EthernetNoHardware: Serial.println(F("NONE (detection failed; some W5100 clones report this even when working)")); break;
     case EthernetW5100:      Serial.println(F("W5100")); break;
     case EthernetW5200:      Serial.println(F("W5200")); break;
     case EthernetW5500:      Serial.println(F("W5500")); break;
     default:                 Serial.println(F("unknown")); break;
   }
-  if (hw == EthernetNoHardware) {
-    halt(F("No Ethernet shield detected. Check seating, power, pin 10."));
-  }
+
+  Serial.println(F("Configuring static IP..."));
+  Ethernet.begin(mac, arduinoIp, dnsServer, gateway, subnet);
 
   Serial.print(F("Link: "));
   EthernetLinkStatus link = Ethernet.linkStatus();
   Serial.println(link == LinkON ? F("ON") : (link == LinkOFF ? F("OFF") : F("UNKNOWN")));
-  if (link == LinkOFF) {
-    Serial.println(F("WARN: cable unplugged or switch port dead; continuing..."));
-  }
 
-  Serial.println(F("Configuring static IP..."));
-  Ethernet.begin(mac, arduinoIp, dnsServer, gateway, subnet);
   Serial.print(F("IP: "));
   Serial.println(Ethernet.localIP());
+
+  if (Ethernet.localIP() == IPAddress(0, 0, 0, 0)) {
+    Serial.println(F("WARN: IP is 0.0.0.0; SPI to W5100 likely not working."));
+    Serial.println(F("      Re-seat shield, check pins 10-13. Will keep trying MQTT anyway."));
+  }
 
   mqtt.setServer(broker, BROKER_PORT);
   mqtt.setCallback(mqttCallback);
