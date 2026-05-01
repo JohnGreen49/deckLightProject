@@ -13,7 +13,7 @@ IPAddress arduinoIp(192, 168, 1, 50);
 IPAddress dnsServer(192, 168, 1, 1);
 IPAddress gateway(192, 168, 1, 1);
 IPAddress subnet(255, 255, 255, 0);
-const char* BROKER_HOST = "PLANTWATCHVM";
+IPAddress broker(192, 168, 1, 152);
 const uint16_t BROKER_PORT = 1883;
 const char* CLIENT_ID = "deck-lights";
 const char* TOPIC_CMD = "home/lights/commands";
@@ -122,7 +122,7 @@ void setup() {
   Serial.print(F("IP: "));
   Serial.println(Ethernet.localIP());
 
-  mqtt.setServer(BROKER_HOST, BROKER_PORT);
+  mqtt.setServer(broker, BROKER_PORT);
   mqtt.setCallback(mqttCallback);
 }
 
