@@ -1,82 +1,89 @@
-// ESP32 + WS2812 diagnostic sketch.
+// ESP32 + addressable LED strip diagnostic / CHIPSET PROBE.
 //
-// Wiring checklist for a 9-LED strip:
-//   LED VCC  -> 5V (preferably a SEPARATE 5V supply on long strips or
-//                   when the board is USB-powered; see power note below)
-//   LED GND  -> ESP32 GND  (MUST share ground)
-//   LED DIN  -> ESP32 GPIO defined by DATA_PIN, into the FIRST pixel's DIN
+// The "separate purchase" 9-LED test strip has an unknown chipset. WS2812B
+// (800 kHz) and WS2811 (400 kHz) use different bit timing; sending one to
+// the other produces exactly the "looks frozen on a frame, never updates"
+// failure mode.
 //
-// Power note (HiLetgo UNO D1 R32 / WROOM-32 boards over USB):
-//   USB delivers ~500mA. The ESP32 itself burns ~250-400mA with WiFi up, so
-//   the strip is left with maybe 100-250mA. 9 WS2812s at full white want
-//   ~540mA, which sags the 5V rail and locks the strip after the first frame
-//   (symptom: LEDs latch one pattern at reset and never update again).
-//   Either lower BRIGHTNESS (this sketch) or feed the strip from a separate
-//   5V supply with a common ground.
+// HOW TO USE THIS SKETCH:
+//   1. Set CHIPSET below to one option.
+//   2. Flash. Watch for: a single bright pixel walking left-to-right,
+//      cycling RED -> GREEN -> BLUE per pass, with serial "alive" lines.
+//   3. If you see clean motion -> that's your chipset. Done.
+//      If you see frozen / wrong-color / garbled output -> try the next
+//      option. Most likely culprits are WS2811, then SK6812, then WS2812B.
 //
-// Pin notes:
-//   - GPIO 16 is safe on plain WROOM-32 boards. WROVER boards use GPIO 16/17
-//     for PSRAM and they will not drive LEDs cleanly there.
-//   - WS2812 data is nominally 5V logic. ESP32's 3.3V output usually works on
-//     short runs; on marginal strips add a 74AHCT125 level shifter.
-//   - If your strip is WS2811/SK6812/WS2813, change LED_TYPE accordingly.
+// Wiring (all options, 3-pad single-wire family):
+//   LED +5V  -> board 5V (use external 5V supply for >20 LEDs at brightness)
+//   LED GND  -> board GND  (MUST share ground)
+//   LED DIN  -> GPIO defined by DATA_PIN, into the FIRST pixel's DIN
+//
+// COLOR_ORDER is the second clue. If motion works but the "RED" pass
+// shows green or blue, swap the order (GRB / RGB / BRG / etc.) and reflash.
 
 #include <FastLED.h>
 
+// --- pick ONE chipset to test -----------------------------------------------
+// WS2811   : 400 kHz, common in 12mm bullet pixels and many cheap strips.
+// WS2812B  : 800 kHz, classic NeoPixel 5050.
+// WS2812   : 800 kHz, original (slightly looser timing than WS2812B).
+// SK6812   : 800 kHz, WS2812B-like; works as RGB if 3 channels.
+// TM1809   : 800 kHz, older clone.
+// UCS1903  : 400 kHz, older clone.
+#define CHIPSET     WS2811
+#define COLOR_ORDER RGB     // try GRB if reds/greens look swapped
+// ----------------------------------------------------------------------------
+
 #define NUM_LEDS    9
 #define DATA_PIN    16
-#define LED_TYPE    WS2812
-#define COLOR_ORDER GRB
-#define BRIGHTNESS  16    // low to keep total current well under USB budget
+#define BRIGHTNESS  32
 
 CRGB leds[NUM_LEDS];
-
-static void showAll(CRGB c, uint16_t holdMs, const char *label) {
-  Serial.print("show: "); Serial.print(label); Serial.print(" ... ");
-  fill_solid(leds, NUM_LEDS, c);
-  FastLED.show();
-  Serial.println("done");
-  delay(holdMs);
-}
 
 void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println();
-  Serial.println("=== ESP32 LED diagnostic ===");
-  Serial.print("LEDs: ");      Serial.println(NUM_LEDS);
+  Serial.println("=== ESP32 LED chipset probe ===");
+  Serial.print("LEDs: ");          Serial.println(NUM_LEDS);
   Serial.print("Data pin: GPIO "); Serial.println(DATA_PIN);
-  Serial.print("Brightness: "); Serial.println(BRIGHTNESS);
+  Serial.print("Brightness: ");    Serial.println(BRIGHTNESS);
+  // Echo the active chipset/color order so the serial log matches the build.
+  #define _STR(x)  #x
+  #define _XSTR(x) _STR(x)
+  Serial.print("Chipset: ");      Serial.println(_XSTR(CHIPSET));
+  Serial.print("Color order: ");  Serial.println(_XSTR(COLOR_ORDER));
 
-  FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS);
+  FastLED.addLeds<CHIPSET, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS);
   FastLED.setBrightness(BRIGHTNESS);
   FastLED.clear(true);
-
-  // Long solid holds make it impossible to miss if the strip is alive.
-  showAll(CRGB::Red,   3000, "all RED 3s");
-  showAll(CRGB::Green, 3000, "all GREEN 3s");
-  showAll(CRGB::Blue,  3000, "all BLUE 3s");
-  showAll(CRGB::White, 2000, "all WHITE 2s");
-  FastLED.clear(true);
-  Serial.println("Entering rainbow loop. If you only see colors here and not");
-  Serial.println("during the solid holds above, the strip is fine and we have");
-  Serial.println("a brightness/timing issue elsewhere.");
 }
 
+// Single-pixel walker is the clearest "is the strip actually receiving
+// frames" test: any one frozen LED or scrambled pattern means the chipset
+// or color order is wrong.
 void loop() {
-  static uint8_t hue = 0;
+  static const CRGB cycleColors[] = { CRGB::Red, CRGB::Green, CRGB::Blue };
+  static uint8_t pos = 0;
+  static uint8_t colorIdx = 0;
   static uint32_t lastBeat = 0;
-  uint32_t now = millis();
 
-  fill_rainbow(leds, NUM_LEDS, hue, 255 / NUM_LEDS);
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  leds[pos] = cycleColors[colorIdx];
   FastLED.show();
-  hue++;
 
-  // Heartbeat once per second so we know the loop is running even if no light.
+  uint32_t now = millis();
   if (now - lastBeat >= 1000) {
     lastBeat = now;
     Serial.print("alive t="); Serial.print(now / 1000);
-    Serial.print("s hue="); Serial.println(hue);
+    Serial.print("s pos=");   Serial.print(pos);
+    Serial.print(" color=");  Serial.println(colorIdx);
   }
-  delay(30);
+
+  pos++;
+  if (pos >= NUM_LEDS) {
+    pos = 0;
+    colorIdx = (colorIdx + 1) % 3;
+  }
+  delay(250);
 }
