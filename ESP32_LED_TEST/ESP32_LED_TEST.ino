@@ -1,38 +1,29 @@
-// ESP32 + addressable LED strip diagnostic / CHIPSET PROBE.
+// ESP32 + WS2812B diagnostic with single-pixel walker.
 //
-// The "separate purchase" 9-LED test strip has an unknown chipset. WS2812B
-// (800 kHz) and WS2811 (400 kHz) use different bit timing; sending one to
-// the other produces exactly the "looks frozen on a frame, never updates"
-// failure mode.
+// Strip is confirmed WS2812B / NEOPIXEL / GRB (cut from a working reel).
+// Symptom being investigated: first frame latches, subsequent frames are
+// ignored. The most common cause on ESP32 + WS2812B is a marginal 3.3V
+// data line driving a 5V-logic strip whose "high" threshold is ~3.5V.
 //
-// HOW TO USE THIS SKETCH:
-//   1. Set CHIPSET below to one option.
-//   2. Flash. Watch for: a single bright pixel walking left-to-right,
-//      cycling RED -> GREEN -> BLUE per pass, with serial "alive" lines.
-//   3. If you see clean motion -> that's your chipset. Done.
-//      If you see frozen / wrong-color / garbled output -> try the next
-//      option. Most likely culprits are WS2811, then SK6812, then WS2812B.
+// Hardware fixes to try (best-first):
+//   1. Add a 330-470 ohm resistor in series with DIN, close to the ESP32.
+//      Improves edge integrity and often resolves the marginal-threshold
+//      lockup outright.
+//   2. Keep the data wire SHORT (< 15 cm) and well away from power wires.
+//   3. If 1-2 don't fix it: add a 74AHCT125 level shifter (3.3V -> 5V).
+//   4. Trick that often works on small builds: power the first LED through
+//      a 1N4001 diode, dropping its VDD ~0.6V so its logic threshold falls
+//      to ~3.1V, which 3.3V can comfortably meet.
 //
-// Wiring (all options, 3-pad single-wire family):
-//   LED +5V  -> board 5V (use external 5V supply for >20 LEDs at brightness)
+// Wiring (3-pad single-wire family):
+//   LED +5V  -> board 5V (or external 5V for longer strips, common ground)
 //   LED GND  -> board GND  (MUST share ground)
-//   LED DIN  -> GPIO defined by DATA_PIN, into the FIRST pixel's DIN
-//
-// COLOR_ORDER is the second clue. If motion works but the "RED" pass
-// shows green or blue, swap the order (GRB / RGB / BRG / etc.) and reflash.
+//   LED DIN  -> GPIO defined by DATA_PIN (with 330-470 ohm in series)
 
 #include <FastLED.h>
 
-// --- pick ONE chipset to test -----------------------------------------------
-// WS2811   : 400 kHz, common in 12mm bullet pixels and many cheap strips.
-// WS2812B  : 800 kHz, classic NeoPixel 5050.
-// WS2812   : 800 kHz, original (slightly looser timing than WS2812B).
-// SK6812   : 800 kHz, WS2812B-like; works as RGB if 3 channels.
-// TM1809   : 800 kHz, older clone.
-// UCS1903  : 400 kHz, older clone.
-#define CHIPSET     WS2811
-#define COLOR_ORDER RGB     // try GRB if reds/greens look swapped
-// ----------------------------------------------------------------------------
+#define CHIPSET     WS2812B
+#define COLOR_ORDER GRB
 
 #define NUM_LEDS    9
 #define DATA_PIN    16
