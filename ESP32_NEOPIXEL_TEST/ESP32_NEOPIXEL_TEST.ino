@@ -33,7 +33,10 @@ void setup() {
   Serial.print("Data pin: GPIO "); Serial.println(DATA_PIN);
 
   strip.begin();
-  strip.setBrightness(255);
+  // Low brightness keeps total strip current well under the USB budget on
+  // boards like the HiLetgo UNO D1 R32. If the strip locks after one frame
+  // at higher brightness, it's a power sag, not a driver bug.
+  strip.setBrightness(16);
   strip.clear();
   strip.show();
 

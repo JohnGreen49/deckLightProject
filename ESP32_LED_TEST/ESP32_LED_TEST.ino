@@ -1,17 +1,24 @@
 // ESP32 + WS2812 diagnostic sketch.
 //
 // Wiring checklist for a 9-LED strip:
-//   LED VCC  -> 5V (USB 5V is fine for 9 LEDs)
+//   LED VCC  -> 5V (preferably a SEPARATE 5V supply on long strips or
+//                   when the board is USB-powered; see power note below)
 //   LED GND  -> ESP32 GND  (MUST share ground)
 //   LED DIN  -> ESP32 GPIO defined by DATA_PIN, into the FIRST pixel's DIN
 //
-// Notes:
-//   - GPIO 16 is safe on classic ESP32, ESP32-S3, and ESP32-C3 (not a strapping pin).
-//     The previous default of GPIO 5 is a strapping pin on classic ESP32 and can
-//     cause boot oddities; avoid it for LED data.
-//   - WS2812 data is nominally 5V logic. ESP32's 3.3V output usually works on short
-//     runs, but if signal is marginal try a 74AHCT125 level shifter or power the
-//     first LED from 3.7-4.2V so its logic threshold drops.
+// Power note (HiLetgo UNO D1 R32 / WROOM-32 boards over USB):
+//   USB delivers ~500mA. The ESP32 itself burns ~250-400mA with WiFi up, so
+//   the strip is left with maybe 100-250mA. 9 WS2812s at full white want
+//   ~540mA, which sags the 5V rail and locks the strip after the first frame
+//   (symptom: LEDs latch one pattern at reset and never update again).
+//   Either lower BRIGHTNESS (this sketch) or feed the strip from a separate
+//   5V supply with a common ground.
+//
+// Pin notes:
+//   - GPIO 16 is safe on plain WROOM-32 boards. WROVER boards use GPIO 16/17
+//     for PSRAM and they will not drive LEDs cleanly there.
+//   - WS2812 data is nominally 5V logic. ESP32's 3.3V output usually works on
+//     short runs; on marginal strips add a 74AHCT125 level shifter.
 //   - If your strip is WS2811/SK6812/WS2813, change LED_TYPE accordingly.
 
 #include <FastLED.h>
@@ -20,7 +27,7 @@
 #define DATA_PIN    16
 #define LED_TYPE    WS2812
 #define COLOR_ORDER GRB
-#define BRIGHTNESS  255   // full brightness for diagnostic visibility
+#define BRIGHTNESS  16    // low to keep total current well under USB budget
 
 CRGB leds[NUM_LEDS];
 
