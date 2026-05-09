@@ -1,75 +1,100 @@
-// ESP32 + WS2812 diagnostic sketch.
+// ESP32 + WS2812B per-LED ramp test.
 //
-// Wiring checklist for a 9-LED strip:
-//   LED VCC  -> 5V (USB 5V is fine for 9 LEDs)
-//   LED GND  -> ESP32 GND  (MUST share ground)
-//   LED DIN  -> ESP32 GPIO defined by DATA_PIN, into the FIRST pixel's DIN
+// Strip is confirmed WS2812B / NEOPIXEL / GRB.
 //
-// Notes:
-//   - GPIO 16 is safe on classic ESP32, ESP32-S3, and ESP32-C3 (not a strapping pin).
-//     The previous default of GPIO 5 is a strapping pin on classic ESP32 and can
-//     cause boot oddities; avoid it for LED data.
-//   - WS2812 data is nominally 5V logic. ESP32's 3.3V output usually works on short
-//     runs, but if signal is marginal try a 74AHCT125 level shifter or power the
-//     first LED from 3.7-4.2V so its logic threshold drops.
-//   - If your strip is WS2811/SK6812/WS2813, change LED_TYPE accordingly.
+// For each LED 0..N-1 in sequence:
+//   - ramp RED   from 0 to 255 over 1024 ms (others off)
+//   - ramp GREEN from 0 to 255 over 1024 ms
+//   - ramp BLUE  from 0 to 255 over 1024 ms
+//   - return that LED to black, advance to next
+// Then loop.
+//
+// Why this is the right diagnostic now:
+//   - A slow ramp must visibly change every ~16 ms. If the strip ever
+//     freezes on a non-zero value, you can see the exact frame it died.
+//   - One-LED-at-a-time isolates a possible bad pixel / addressing issue.
+//   - Iterating R, G, B exposes color-order or per-channel data corruption.
 
 #include <FastLED.h>
 
 #define NUM_LEDS    9
 #define DATA_PIN    16
-#define LED_TYPE    WS2812
+#define CHIPSET     WS2812B
 #define COLOR_ORDER GRB
-#define BRIGHTNESS  255   // full brightness for diagnostic visibility
+#define BRIGHTNESS  64        // master scale; ramp value runs 0..255 underneath
+#define RAMP_MS     1024UL
 
 CRGB leds[NUM_LEDS];
 
-static void showAll(CRGB c, uint16_t holdMs, const char *label) {
-  Serial.print("show: "); Serial.print(label); Serial.print(" ... ");
-  fill_solid(leds, NUM_LEDS, c);
+// Refresh roughly every 16 ms (~60 Hz). Faster wastes show() calls; slower
+// makes the ramp look stepped.
+#define FRAME_MS    16
+
+static void rampLed(uint8_t pos, uint8_t channel, const char *label) {
+  Serial.print("LED "); Serial.print(pos);
+  Serial.print(" ramp "); Serial.println(label);
+
+  uint32_t start = millis();
+  uint32_t nextFrame = start;
+  uint8_t  lastV = 0;
+
+  while (true) {
+    uint32_t now = millis();
+    uint32_t elapsed = now - start;
+    if (elapsed >= RAMP_MS) break;
+
+    if ((int32_t)(now - nextFrame) >= 0) {
+      nextFrame += FRAME_MS;
+      uint8_t v = (uint8_t)((elapsed * 255UL) / RAMP_MS);
+      if (v != lastV) {
+        fill_solid(leds, NUM_LEDS, CRGB::Black);
+        switch (channel) {
+          case 0: leds[pos] = CRGB(v, 0, 0); break;
+          case 1: leds[pos] = CRGB(0, v, 0); break;
+          case 2: leds[pos] = CRGB(0, 0, v); break;
+        }
+        FastLED.show();
+        lastV = v;
+      }
+    } else {
+      delay(1);
+    }
+  }
+
+  // End each ramp at full value briefly so the peak is visible, then black
+  // before moving on.
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  switch (channel) {
+    case 0: leds[pos] = CRGB(255, 0, 0); break;
+    case 1: leds[pos] = CRGB(0, 255, 0); break;
+    case 2: leds[pos] = CRGB(0, 0, 255); break;
+  }
   FastLED.show();
-  Serial.println("done");
-  delay(holdMs);
+  delay(150);
+
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  FastLED.show();
 }
 
 void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println();
-  Serial.println("=== ESP32 LED diagnostic ===");
-  Serial.print("LEDs: ");      Serial.println(NUM_LEDS);
+  Serial.println("=== ESP32 LED ramp test ===");
+  Serial.print("LEDs: ");          Serial.println(NUM_LEDS);
   Serial.print("Data pin: GPIO "); Serial.println(DATA_PIN);
-  Serial.print("Brightness: "); Serial.println(BRIGHTNESS);
+  Serial.print("Brightness: ");    Serial.println(BRIGHTNESS);
 
-  FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS);
+  FastLED.addLeds<CHIPSET, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS);
   FastLED.setBrightness(BRIGHTNESS);
   FastLED.clear(true);
-
-  // Long solid holds make it impossible to miss if the strip is alive.
-  showAll(CRGB::Red,   3000, "all RED 3s");
-  showAll(CRGB::Green, 3000, "all GREEN 3s");
-  showAll(CRGB::Blue,  3000, "all BLUE 3s");
-  showAll(CRGB::White, 2000, "all WHITE 2s");
-  FastLED.clear(true);
-  Serial.println("Entering rainbow loop. If you only see colors here and not");
-  Serial.println("during the solid holds above, the strip is fine and we have");
-  Serial.println("a brightness/timing issue elsewhere.");
 }
 
 void loop() {
-  static uint8_t hue = 0;
-  static uint32_t lastBeat = 0;
-  uint32_t now = millis();
-
-  fill_rainbow(leds, NUM_LEDS, hue, 255 / NUM_LEDS);
-  FastLED.show();
-  hue++;
-
-  // Heartbeat once per second so we know the loop is running even if no light.
-  if (now - lastBeat >= 1000) {
-    lastBeat = now;
-    Serial.print("alive t="); Serial.print(now / 1000);
-    Serial.print("s hue="); Serial.println(hue);
+  for (uint8_t i = 0; i < NUM_LEDS; i++) {
+    rampLed(i, 0, "RED");
+    rampLed(i, 1, "GREEN");
+    rampLed(i, 2, "BLUE");
   }
-  delay(30);
+  Serial.println("--- full pass complete, restarting ---");
 }
