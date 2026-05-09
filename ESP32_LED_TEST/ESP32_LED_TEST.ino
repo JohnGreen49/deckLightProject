@@ -1,80 +1,100 @@
-// ESP32 + WS2812B diagnostic with single-pixel walker.
+// ESP32 + WS2812B per-LED ramp test.
 //
-// Strip is confirmed WS2812B / NEOPIXEL / GRB (cut from a working reel).
-// Symptom being investigated: first frame latches, subsequent frames are
-// ignored. The most common cause on ESP32 + WS2812B is a marginal 3.3V
-// data line driving a 5V-logic strip whose "high" threshold is ~3.5V.
+// Strip is confirmed WS2812B / NEOPIXEL / GRB.
 //
-// Hardware fixes to try (best-first):
-//   1. Add a 330-470 ohm resistor in series with DIN, close to the ESP32.
-//      Improves edge integrity and often resolves the marginal-threshold
-//      lockup outright.
-//   2. Keep the data wire SHORT (< 15 cm) and well away from power wires.
-//   3. If 1-2 don't fix it: add a 74AHCT125 level shifter (3.3V -> 5V).
-//   4. Trick that often works on small builds: power the first LED through
-//      a 1N4001 diode, dropping its VDD ~0.6V so its logic threshold falls
-//      to ~3.1V, which 3.3V can comfortably meet.
+// For each LED 0..N-1 in sequence:
+//   - ramp RED   from 0 to 255 over 1024 ms (others off)
+//   - ramp GREEN from 0 to 255 over 1024 ms
+//   - ramp BLUE  from 0 to 255 over 1024 ms
+//   - return that LED to black, advance to next
+// Then loop.
 //
-// Wiring (3-pad single-wire family):
-//   LED +5V  -> board 5V (or external 5V for longer strips, common ground)
-//   LED GND  -> board GND  (MUST share ground)
-//   LED DIN  -> GPIO defined by DATA_PIN (with 330-470 ohm in series)
+// Why this is the right diagnostic now:
+//   - A slow ramp must visibly change every ~16 ms. If the strip ever
+//     freezes on a non-zero value, you can see the exact frame it died.
+//   - One-LED-at-a-time isolates a possible bad pixel / addressing issue.
+//   - Iterating R, G, B exposes color-order or per-channel data corruption.
 
 #include <FastLED.h>
 
-#define CHIPSET     WS2812B
-#define COLOR_ORDER GRB
-
 #define NUM_LEDS    9
 #define DATA_PIN    16
-#define BRIGHTNESS  32
+#define CHIPSET     WS2812B
+#define COLOR_ORDER GRB
+#define BRIGHTNESS  64        // master scale; ramp value runs 0..255 underneath
+#define RAMP_MS     1024UL
 
 CRGB leds[NUM_LEDS];
+
+// Refresh roughly every 16 ms (~60 Hz). Faster wastes show() calls; slower
+// makes the ramp look stepped.
+#define FRAME_MS    16
+
+static void rampLed(uint8_t pos, uint8_t channel, const char *label) {
+  Serial.print("LED "); Serial.print(pos);
+  Serial.print(" ramp "); Serial.println(label);
+
+  uint32_t start = millis();
+  uint32_t nextFrame = start;
+  uint8_t  lastV = 0;
+
+  while (true) {
+    uint32_t now = millis();
+    uint32_t elapsed = now - start;
+    if (elapsed >= RAMP_MS) break;
+
+    if ((int32_t)(now - nextFrame) >= 0) {
+      nextFrame += FRAME_MS;
+      uint8_t v = (uint8_t)((elapsed * 255UL) / RAMP_MS);
+      if (v != lastV) {
+        fill_solid(leds, NUM_LEDS, CRGB::Black);
+        switch (channel) {
+          case 0: leds[pos] = CRGB(v, 0, 0); break;
+          case 1: leds[pos] = CRGB(0, v, 0); break;
+          case 2: leds[pos] = CRGB(0, 0, v); break;
+        }
+        FastLED.show();
+        lastV = v;
+      }
+    } else {
+      delay(1);
+    }
+  }
+
+  // End each ramp at full value briefly so the peak is visible, then black
+  // before moving on.
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  switch (channel) {
+    case 0: leds[pos] = CRGB(255, 0, 0); break;
+    case 1: leds[pos] = CRGB(0, 255, 0); break;
+    case 2: leds[pos] = CRGB(0, 0, 255); break;
+  }
+  FastLED.show();
+  delay(150);
+
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  FastLED.show();
+}
 
 void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println();
-  Serial.println("=== ESP32 LED chipset probe ===");
+  Serial.println("=== ESP32 LED ramp test ===");
   Serial.print("LEDs: ");          Serial.println(NUM_LEDS);
   Serial.print("Data pin: GPIO "); Serial.println(DATA_PIN);
   Serial.print("Brightness: ");    Serial.println(BRIGHTNESS);
-  // Echo the active chipset/color order so the serial log matches the build.
-  #define _STR(x)  #x
-  #define _XSTR(x) _STR(x)
-  Serial.print("Chipset: ");      Serial.println(_XSTR(CHIPSET));
-  Serial.print("Color order: ");  Serial.println(_XSTR(COLOR_ORDER));
 
   FastLED.addLeds<CHIPSET, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS);
   FastLED.setBrightness(BRIGHTNESS);
   FastLED.clear(true);
 }
 
-// Single-pixel walker is the clearest "is the strip actually receiving
-// frames" test: any one frozen LED or scrambled pattern means the chipset
-// or color order is wrong.
 void loop() {
-  static const CRGB cycleColors[] = { CRGB::Red, CRGB::Green, CRGB::Blue };
-  static uint8_t pos = 0;
-  static uint8_t colorIdx = 0;
-  static uint32_t lastBeat = 0;
-
-  fill_solid(leds, NUM_LEDS, CRGB::Black);
-  leds[pos] = cycleColors[colorIdx];
-  FastLED.show();
-
-  uint32_t now = millis();
-  if (now - lastBeat >= 1000) {
-    lastBeat = now;
-    Serial.print("alive t="); Serial.print(now / 1000);
-    Serial.print("s pos=");   Serial.print(pos);
-    Serial.print(" color=");  Serial.println(colorIdx);
+  for (uint8_t i = 0; i < NUM_LEDS; i++) {
+    rampLed(i, 0, "RED");
+    rampLed(i, 1, "GREEN");
+    rampLed(i, 2, "BLUE");
   }
-
-  pos++;
-  if (pos >= NUM_LEDS) {
-    pos = 0;
-    colorIdx = (colorIdx + 1) % 3;
-  }
-  delay(250);
+  Serial.println("--- full pass complete, restarting ---");
 }
