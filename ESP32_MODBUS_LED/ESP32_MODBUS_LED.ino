@@ -2,7 +2,7 @@
 //
 // Combines:
 //   - WiFi STA connect (see ESP32_WIFI_TEST)
-//   - Adafruit_NeoPixel driver on GPIO 16 (see ESP32_NEOPIXEL_TEST)
+//   - FastLED driver on GPIO 16, WS2812B / GRB (see ESP32_LED_TEST)
 //   - Hand-rolled Modbus TCP slave on port 502 (no extra library)
 //
 // Holding register map (FC3 read, FC6 write single, FC16 write multiple):
@@ -25,15 +25,17 @@
 // (mbpoll uses 1-based register numbering; address 0 is register 1.)
 
 #include <WiFi.h>
-#include <Adafruit_NeoPixel.h>
+#include <FastLED.h>
 
 // ---------- User config ----------
 const char* WIFI_SSID = "YOUR_SSID";
 const char* WIFI_PASS = "YOUR_PASSWORD";
 const char* HOSTNAME  = "esp32-decklights";
 
-#define NUM_LEDS  9
-#define DATA_PIN  16
+#define NUM_LEDS    9
+#define DATA_PIN    16
+#define CHIPSET     WS2812B
+#define COLOR_ORDER GRB
 
 const uint16_t MODBUS_PORT      = 502;
 const uint8_t  MODBUS_UNIT_ID   = 1;     // accept this unit id (and 0xFF broadcast-style)
@@ -50,7 +52,7 @@ static const uint16_t HR_TOTAL      = HR_ENABLE + 1;             // 29
 
 static uint16_t holding[HR_TOTAL] = {0};
 
-Adafruit_NeoPixel strip(NUM_LEDS, DATA_PIN, NEO_GRB + NEO_KHZ800);
+CRGB leds[NUM_LEDS];
 
 WiFiServer modbusServer(MODBUS_PORT);
 WiFiClient modbusClient;   // single active client; new connections displace it
@@ -66,7 +68,7 @@ enum : uint8_t {
 // ---------- LED apply ----------
 static void applyStrip() {
   uint8_t bright = (uint8_t)min<uint16_t>(holding[HR_BRIGHTNESS], 255);
-  strip.setBrightness(bright);
+  FastLED.setBrightness(bright);
 
   bool enabled = holding[HR_ENABLE] != 0;
 
@@ -74,9 +76,9 @@ static void applyStrip() {
     uint8_t r = enabled ? (uint8_t)min<uint16_t>(holding[HR_RGB_BASE + 3 * i + 0], 255) : 0;
     uint8_t g = enabled ? (uint8_t)min<uint16_t>(holding[HR_RGB_BASE + 3 * i + 1], 255) : 0;
     uint8_t b = enabled ? (uint8_t)min<uint16_t>(holding[HR_RGB_BASE + 3 * i + 2], 255) : 0;
-    strip.setPixelColor(i, strip.Color(r, g, b));
+    leds[i] = CRGB(r, g, b);
   }
-  strip.show();
+  FastLED.show();
 }
 
 // ---------- WiFi ----------
@@ -291,10 +293,9 @@ void setup() {
   Serial.println();
   Serial.println("=== ESP32 Modbus TCP LED controller ===");
 
-  strip.begin();
-  strip.setBrightness(0);
-  strip.clear();
-  strip.show();
+  FastLED.addLeds<CHIPSET, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS);
+  FastLED.setBrightness(0);
+  FastLED.clear(true);
 
   // Sane defaults: off, mid brightness, all black.
   holding[HR_BRIGHTNESS] = 32;
