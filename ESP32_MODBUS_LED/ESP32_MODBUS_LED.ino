@@ -26,16 +26,23 @@
 
 #include <WiFi.h>
 #include <FastLED.h>
+#include <Preferences.h>
 
 // ---------- User config ----------
-const char* WIFI_SSID = "YOUR_SSID";
-const char* WIFI_PASS = "YOUR_PASSWORD";
+// SSID and password live in NVS flash (namespace "wifi"), set over the serial
+// console at 115200 8N1. See the serial command handler at the bottom of this
+// file. Hostname is fixed.
 const char* HOSTNAME  = "esp32-decklights";
 
 #define NUM_LEDS    9
 #define DATA_PIN    16
 #define CHIPSET     WS2812B
 #define COLOR_ORDER GRB
+
+// Live WiFi credentials (loaded from NVS at boot, updated by serial commands).
+String wifiSsid;
+String wifiPass;
+Preferences wifiPrefs;
 
 const uint16_t MODBUS_PORT      = 502;
 const uint8_t  MODBUS_UNIT_ID   = 1;     // accept this unit id (and 0xFF broadcast-style)
@@ -95,13 +102,40 @@ static const char* wifiStatusToString(wl_status_t s) {
   }
 }
 
-static void connectWiFi() {
+static void loadCredentials() {
+  wifiPrefs.begin("wifi", /*readOnly=*/true);
+  wifiSsid = wifiPrefs.getString("ssid", "");
+  wifiPass = wifiPrefs.getString("pass", "");
+  wifiPrefs.end();
+}
+
+static void saveCredentials() {
+  wifiPrefs.begin("wifi", /*readOnly=*/false);
+  wifiPrefs.putString("ssid", wifiSsid);
+  wifiPrefs.putString("pass", wifiPass);
+  wifiPrefs.end();
+}
+
+static void clearCredentials() {
+  wifiPrefs.begin("wifi", /*readOnly=*/false);
+  wifiPrefs.clear();
+  wifiPrefs.end();
+  wifiSsid = "";
+  wifiPass = "";
+}
+
+static bool connectWiFi() {
+  if (wifiSsid.length() == 0) {
+    Serial.println("No SSID configured. Use 'ssid <name>' and 'pass <secret>' over serial.");
+    return false;
+  }
+
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(HOSTNAME);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
 
   Serial.print("Connecting to ");
-  Serial.print(WIFI_SSID);
+  Serial.print(wifiSsid);
 
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED &&
@@ -116,10 +150,12 @@ static void connectWiFi() {
     Serial.println(WiFi.localIP());
     Serial.print("Modbus TCP on port ");
     Serial.println(MODBUS_PORT);
-  } else {
-    Serial.print("WiFi NOT connected. status=");
-    Serial.println(wifiStatusToString(WiFi.status()));
+    return true;
   }
+
+  Serial.print("WiFi NOT connected. status=");
+  Serial.println(wifiStatusToString(WiFi.status()));
+  return false;
 }
 
 // ---------- Modbus TCP ----------
@@ -286,6 +322,114 @@ static void serviceModbus() {
   }
 }
 
+// ---------- Serial console ----------
+//
+// Line-based commands, terminated by LF or CR. Echoes back results so a host
+// script can wait for the next prompt.
+//
+//   help                 list commands
+//   show                 show stored ssid (password masked) and wifi status
+//   ssid <value>         store new SSID (does not reconnect; run 'connect')
+//   pass <value>         store new password (does not reconnect; run 'connect')
+//   connect              save creds, drop current link, attempt connect
+//   disconnect           drop the current link
+//   clear                erase stored credentials
+//   reboot               restart the ESP32
+
+static String serialBuf;
+
+static void startModbus() {
+  modbusServer.begin();
+  modbusServer.setNoDelay(true);
+}
+
+static void printPrompt() {
+  Serial.print("> ");
+}
+
+static void cmdShow() {
+  Serial.print("ssid: ");
+  Serial.println(wifiSsid.length() ? wifiSsid : String("(unset)"));
+  Serial.print("pass: ");
+  Serial.println(wifiPass.length() ? String("(set, ") + wifiPass.length() + " chars)" : String("(unset)"));
+  Serial.print("wifi: ");
+  Serial.println(wifiStatusToString(WiFi.status()));
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("ip:   ");
+    Serial.println(WiFi.localIP());
+  }
+}
+
+static void cmdHelp() {
+  Serial.println(F("commands:"));
+  Serial.println(F("  help"));
+  Serial.println(F("  show"));
+  Serial.println(F("  ssid <value>"));
+  Serial.println(F("  pass <value>"));
+  Serial.println(F("  connect"));
+  Serial.println(F("  disconnect"));
+  Serial.println(F("  clear"));
+  Serial.println(F("  reboot"));
+}
+
+static void handleLine(String line) {
+  line.trim();
+  if (line.length() == 0) { printPrompt(); return; }
+
+  int sp = line.indexOf(' ');
+  String cmd = sp < 0 ? line : line.substring(0, sp);
+  String arg = sp < 0 ? String("") : line.substring(sp + 1);
+  arg.trim();
+  cmd.toLowerCase();
+
+  if (cmd == "help") {
+    cmdHelp();
+  } else if (cmd == "show") {
+    cmdShow();
+  } else if (cmd == "ssid") {
+    if (arg.length() == 0) { Serial.println("usage: ssid <value>"); }
+    else { wifiSsid = arg; saveCredentials(); Serial.println("ssid saved."); }
+  } else if (cmd == "pass") {
+    if (arg.length() == 0) { Serial.println("usage: pass <value>"); }
+    else { wifiPass = arg; saveCredentials(); Serial.println("pass saved."); }
+  } else if (cmd == "connect") {
+    WiFi.disconnect();
+    delay(100);
+    if (connectWiFi()) startModbus();
+  } else if (cmd == "disconnect") {
+    WiFi.disconnect();
+    Serial.println("disconnected.");
+  } else if (cmd == "clear") {
+    clearCredentials();
+    WiFi.disconnect();
+    Serial.println("credentials cleared.");
+  } else if (cmd == "reboot") {
+    Serial.println("rebooting...");
+    Serial.flush();
+    ESP.restart();
+  } else {
+    Serial.print("unknown command: ");
+    Serial.println(cmd);
+    Serial.println("type 'help'");
+  }
+  printPrompt();
+}
+
+static void serviceSerial() {
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == '\r' || c == '\n') {
+      if (serialBuf.length() > 0) {
+        String line = serialBuf;
+        serialBuf = "";
+        handleLine(line);
+      }
+    } else if (serialBuf.length() < 200) {
+      serialBuf += c;
+    }
+  }
+}
+
 // ---------- Setup / loop ----------
 void setup() {
   Serial.begin(115200);
@@ -301,26 +445,33 @@ void setup() {
   holding[HR_BRIGHTNESS] = 32;
   holding[HR_ENABLE]     = 0;
 
-  connectWiFi();
+  loadCredentials();
 
-  if (WiFi.status() == WL_CONNECTED) {
-    modbusServer.begin();
-    modbusServer.setNoDelay(true);
+  if (connectWiFi()) {
+    startModbus();
+  } else {
+    Serial.println("Type 'help' for serial config commands.");
   }
+  printPrompt();
 }
 
 void loop() {
   static unsigned long lastPrint = 0;
+  static unsigned long lastReconnect = 0;
   unsigned long now = millis();
 
+  serviceSerial();
+
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi dropped, reconnecting...");
-    WiFi.disconnect();
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    delay(2000);
-    if (WiFi.status() == WL_CONNECTED) {
-      modbusServer.begin();
-      modbusServer.setNoDelay(true);
+    if (wifiSsid.length() > 0 && now - lastReconnect >= 10000) {
+      lastReconnect = now;
+      Serial.println("WiFi dropped, reconnecting...");
+      WiFi.disconnect();
+      WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
+      delay(2000);
+      if (WiFi.status() == WL_CONNECTED) {
+        startModbus();
+      }
     }
     return;
   }
