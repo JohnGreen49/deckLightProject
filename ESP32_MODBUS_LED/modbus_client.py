@@ -115,11 +115,11 @@ def cmd_fill(host, args):
 
 def cmd_read(host, _args):
     regs = read_holding(host, 0, HR_TOTAL)
-    for i in range(NUM_LEDS):
-        r, g, b = regs[3 * i:3 * i + 3]
-        print(f"  LED {i}: R={r:>3} G={g:>3} B={b:>3}")
-    print(f"  brightness = {regs[HR_BRIGHTNESS]}")
-    print(f"  enable     = {regs[HR_ENABLE]}")
+    leds = " ".join(
+        f"{regs[3*i] & 0xFF:02x}{regs[3*i+1] & 0xFF:02x}{regs[3*i+2] & 0xFF:02x}"
+        for i in range(NUM_LEDS)
+    )
+    print(f"{leds} b={regs[HR_BRIGHTNESS]} e={regs[HR_ENABLE]}")
 
 
 COMMANDS = {
